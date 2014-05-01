@@ -1,0 +1,185 @@
+function [statistics accuracy weights scores W] = svm_train_by_temporal(conn,model_ids,training_precisions,...
+                                                                        data_param_mat,model_param_mat,...
+                                                                        claim_mat,claim_id_time_mat,...
+                                                                        test_sp_case,train_sp_case,workingdir)
+%% Initialize Variables
+
+n_models = length(model_ids);
+
+test_rework_ratio = data_param_mat(1);
+train_rework_ratio = data_param_mat(2);
+training_interval = data_param_mat(3);%training_time
+testing_interval = data_param_mat(4);%testing_time
+start_date_value = datestr(data_param_mat(5),'yyyy-mm-dd');%start_date
+end_date_value = datestr(data_param_mat(6),'yyyy-mm-dd');%end_date
+min_train_data_count_value = data_param_mat(7);
+min_test_data_count_value = data_param_mat(8);
+time_increment_value =  data_param_mat(9);
+max_split_value = data_param_mat(10);
+start_ordering = data_param_mat(11);
+time_window_between_training_and_test = data_param_mat(12);
+
+% compute train_claim_id_time_mat & test_claim_id_time_mat
+train_claim_ids = claim_mat(:,1);
+test_claim_ids = claim_mat(:,1);
+if ~isempty(train_sp_case)
+    train_claim_ids = [train_sp_case(:,1); train_claim_ids];
+    claim_mat = [train_sp_case; claim_mat];
+end
+if ~isempty(test_sp_case)
+    test_claim_ids = [test_sp_case(:,1); test_claim_ids];
+    claim_mat = [claim_mat; test_sp_case];    
+end
+
+claim_level_claim_ids = claim_mat(:,1);
+tf = ismember(claim_id_time_mat(:,1),train_claim_ids);
+train_claim_id_time_mat = claim_id_time_mat(tf,:);
+tf = ismember(claim_id_time_mat(:,1),test_claim_ids);
+test_claim_id_time_mat = claim_id_time_mat(tf,:);
+
+%%
+if start_ordering==1
+    [train_index test_index] = svm_create_date_vec(start_date_value,train_claim_id_time_mat,test_claim_id_time_mat,training_interval,...
+        testing_interval,time_increment_value,min_train_data_count_value,min_test_data_count_value,max_split_value,time_window_between_training_and_test);
+elseif start_ordering==-1
+    [train_index test_index] = svm_create_date_vec_reverse(end_date_value,claim_id_time_mat,training_interval,...
+        testing_interval,time_increment_value,min_train_data_count_value,min_test_data_count_value,max_split_value,time_window_between_training_and_test);
+else
+    error('invalid ordering, the start_ordering parameter can only be normal or reverse')
+end
+
+n_splits = size(train_index,1);
+
+matlabpool open
+for i = 1:n_splits
+    
+    %Compute Training Set
+    t_claim_train_ids = train_claim_id_time_mat(train_index(i,1):train_index(i,2),1);
+    i_train = ismember(claim_level_claim_ids,t_claim_train_ids);
+    train_mat = claim_mat(i_train==1,:);    
+    train_id_set = split_matrix_by_ratio_size(train_mat,train_rework_ratio);
+        
+    %Compute Testing Sets
+    t_claim_test_ids = test_claim_id_time_mat(test_index(i,1):test_index(i,2),1);
+    i_test = ismember(claim_level_claim_ids,t_claim_test_ids);
+    test_mat = claim_mat(i_test==1,:);
+    test_id_set = split_matrix_by_ratio_size(test_mat,test_rework_ratio);
+    n_test_sets = size(test_id_set,2);  
+    
+    %create model from training set (Choose 1st set)
+    [jk train_set_j] = ismember(train_id_set(:,1),claim_level_claim_ids);
+    train_set_mat = claim_mat(train_set_j,:);
+    [jk test_set_k] = ismember(test_id_set(:,1),claim_level_claim_ids);
+    test_set_mat = claim_mat(test_set_k,:);
+    [statistics jk weights] = svm_create_train_test_2(model_ids,model_param_mat,train_set_mat,test_set_mat,i,training_precisions,workingdir); 
+    
+    %compute precision & scores for ALL test_sets
+    accuracy = cell(n_test_sets,n_models);
+    scores = cell(n_test_sets,n_models);
+    parfor k=1:n_test_sets
+        [jk test_set_k] = ismember(test_id_set(:,k),claim_level_claim_ids);
+        test_set_mat = claim_mat(test_set_k,:);        
+        [a b] = svm_compute_scores(test_set_mat,weights,training_precisions);        
+        scores(k,:) = a;
+        accuracy(k,:) = b;
+    end
+    
+ %   [jk I_N] = sort([n_test_sets n_train_sets n_models],1,'descend');
+    
+    for n=1:n_models        
+        accuracy_reshape = cell2mat(reshape(accuracy(:,:,n),[1 n_test_sets]));
+        accuracy_db = mean(accuracy_reshape,2);
+        
+        %alternatively insert all scores
+        [accuracy_95 max_I] = max(accuracy_reshape(find(training_precisions(:,2)==95),:));        
+        scores_db = scores{max_I,n};
+            
+        statistics_db = statistics{n,1};
+        weights_db = weights{n,1};
+        
+        fastinsert(conn,'model_statistics',{'training_model_id','start_time','end_time','run_duration','n_split','file_name'},...
+                   statistics_db);
+        model_stat_id = sql_query(conn,'select max(id) from model_statistics');
+        if iscell(model_stat_id)
+            model_stat_id = cell2mat(model_stat_id);
+        end
+        fastinsert(conn,'feature_training_model_weights',{'model_statistic_id','feature_id','weight'},...
+                    [repmat(model_stat_id,size(weights_db,1),1) weights_db]);
+        fastinsert(conn,'claim_scores',{'claim_id','model_statistic_id','score'},...
+                    [scores_db(:,1) repmat(model_stat_id,size(scores_db,1),1) scores_db(:,2)]);
+        fastinsert(conn,'model_statistic_details',{'model_training_precision_id','model_statistic_id','accuracy'},...
+                    [training_precisions(:,1) repmat(model_stat_id,size(accuracy_db,1),1) accuracy_db]);
+        %w = W{i,j};
+        %save(strcat('E:\Users\Gaurav\IBC\analytics_etl_process\data\W_',num2str(model_stat_id),'.mat'),'w')
+        disp([int2str(model_stat_id) ' RESULTS INSERTED INTO DB!'])
+    
+    end
+end
+matlabpool close
+
+function [train_index test_index] = svm_create_date_vec(start_date,train_claim_id_time_mat,test_claim_id_time_mat,train_interval,test_interval,time_increment,min_count_per_train_split,...
+    min_count_per_test_split,max_split,time_window_between_training_and_test)
+
+start_date_num = datenum(start_date);
+start_loc = find(train_claim_id_time_mat(:,2)>= start_date_num,1);
+n_claim = size(claim_id_time_mat,1);
+split_created = 0;
+
+while ~isempty(start_loc) && start_loc<n_claim && split_created <max_split
+    train_start_date = claim_id_time_mat(start_loc,2);    
+    train_end_date = train_start_date+train_interval;
+    
+    test_start_date = train_end_date+time_window_between_training_and_test;
+    test_end_date = test_start_date+test_interval;
+    
+    t_train_claim_loc = find(train_claim_id_time_mat(:,2)>=train_start_date & train_claim_id_time_mat(:,2)<=train_end_date);
+    t_test_claim_loc  = find( test_claim_id_time_mat(:,2)>=test_start_date  &  test_claim_id_time_mat(:,2)<=test_end_date);
+    
+    t_n_train_claim = length(t_train_claim_loc);
+    t_n_test_claim = length(t_test_claim_loc);
+    
+    if t_n_train_claim >= min_count_per_train_split && t_n_test_claim >=min_count_per_test_split && t_n_train_claim>0 && t_n_test_claim>0
+        split_created = split_created+1;
+        train_index(split_created,1:2) = [min(t_train_claim_loc) max(t_train_claim_loc)];
+         test_index(split_created,1:2) = [min(t_test_claim_loc)  max(t_test_claim_loc)];
+        start_loc = find(train_claim_id_time_mat(:,2)>=train_start_date + time_increment, 1 );
+    else
+        start_loc = find(train_claim_id_time_mat(:,2)>=train_start_date + 1, 1 );
+    end
+    
+end
+
+if split_created==0
+    error('Infeasible split generation parameters, try decreasing mininum data requirement or increasing time windows size')
+end
+
+function [train_index test_index] = svm_create_date_vec_reverse(end_date,claim_id_time_mat,train_interval,test_interval,...
+    time_increment_interval,min_count_per_train_split,min_count_per_test_split,max_split,time_window_between_training_and_test)
+
+start_loc = max(find(claim_id_time_mat(:,2)<=datenum(end_date)));
+earliest_date = min(claim_id_time_mat(:,2));
+split_created = 0;
+test_start_date = claim_id_time_mat(start_loc,2);
+
+while test_start_date>earliest_date && split_created <max_split
+    
+    test_end_date = test_start_date - test_interval;
+    train_start_date = test_end_date - time_window_between_training_and_test;
+    train_end_date = train_start_date - train_interval;
+    
+    t_train_claim_loc=find(claim_id_time_mat(:,2)<=train_start_date & claim_id_time_mat(:,2)>=train_end_date);
+    t_test_claim_loc=find(claim_id_time_mat(:,2)<=test_start_date & claim_id_time_mat(:,2)>=test_end_date);
+    
+    t_n_train_claim = length(t_train_claim_loc);
+    t_n_test_claim = length(t_test_claim_loc);
+    if t_n_train_claim >= min_count_per_train_split && t_n_test_claim >=min_count_per_test_split && t_n_train_claim > 0 && t_n_test_claim > 0
+        split_created= split_created+1;
+        train_index(split_created,1:2)=[min(t_train_claim_loc) max(t_train_claim_loc)];
+        test_index(split_created,1:2)=[min(t_test_claim_loc) max(t_test_claim_loc)];
+        test_start_date = test_start_date - time_increment_interval;
+    else
+        test_start_date = test_start_date-1;
+    end
+    
+end 
+

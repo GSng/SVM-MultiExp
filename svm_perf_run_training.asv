@@ -1,0 +1,38 @@
+function model_file_name = svmperf_run_training(workingdir, train_file, model_file, c_value, e_value, l_value, w_value, t_value, DGSR)
+
+if nargin<8
+    t_value = 0;
+end
+
+switch t
+    case 0
+        eval_str = [workingdir 'svm_run_multi_exp/svm_perf_learn.exe -v 0 -c ' num2str(c_value) ' -e ' num2str(e_value) ' -l ' num2str(l_value) ' -w ' num2str(w_value)...
+                    ' ' train_file ' ' model_file];    
+    case 1
+        eval_str = [workingdir 'svm_run_multi_exp/svm_perf_learn.exe -v 0 -c ' num2str(c_value) ' -e ' num2str(e_value) ' -l ' num2str(l_value) ' -w ' num2str(w_value)...
+                    ' --t 1 --b 0 --k 500 -d ' num2str(DGSR(1)) ' ' train_file ' ' model_file];                   
+    case 2
+        eval_str = [workingdir 'svm_run_multi_exp/svm_perf_learn.exe -v 0 -c ' num2str(c_value) ' -e ' num2str(e_value) ' -l ' num2str(l_value) ' -w ' num2str(w_value)...
+                    ' --t 1 --b 0 --k 500 --i 2 -g ' num2str(DGSR(1)) ' ' train_file ' ' model_file];
+    case 3
+        eval_str = [workingdir 'svm_run_multi_exp/svm_perf_learn.exe -v 0 -c ' num2str(c_value) ' -e ' num2str(e_value) ' -l ' num2str(l_value) ' -w ' num2str(w_value)...
+                    ' --t 1 --b 0 --k 500 -s ' num2str(DGSR(1)) ' -r ' num2str(DGSR(2)) ' ' train_file ' ' model_file];
+
+     
+                    tic
+                    eval(['!E:/Users/Gaurav/IBC/shared_functions/svm_perf_learn.exe -v 0 -c 100 -l 10 -e 0.01 --t 3 -w 3 --b 0 --k 500'...
+                          ' -s ' s{j}...
+                          ' -r ' r{k}...
+                          ' ' train_file ' ' model_file]);
+                    eval(['!E:/Users/Gaurav/IBC/shared_functions/svm_perf_classify.exe ' test_file ' ' model_file ' ' result_file]);
+                    T = toc;              
+
+                    test_scores = textread(result_file);
+                    A = precision_calc(test_scores, new_test_mat1(:,1), training_precisions);
+  
+                end
+           end
+        
+        
+        
+        eval(eval_str)

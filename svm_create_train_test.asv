@@ -1,0 +1,105 @@
+function [statistics accuracy weights scores W] = svm_create_train_test(model_ids,SVM_parameters,...
+                                                                        pos_mat_static,neg_mat_static,...
+                                                                        pos_delete_col,neg_delete_col,...
+                                                                        n_train_positive, n_train_negative,...
+                                                                        n_test_positive, n_test_negative,...
+                                                                        n_split,training_precisions,workingdir)
+% workingdir = 'E:/Users/Gaurav/IBC/';                                                                                                                                                                                                             
+n = length(model_ids);
+
+statistics = cell(1,n);
+accuracy = cell(1,n);
+weights = cell(1,n);
+scores = cell(1,n);
+W = cell(1,n);  
+
+[Rp Cp Vp] = find(pos_mat_static);
+[Rn Cn Vn] = find(neg_mat_static);
+
+clear neg_mat_static pos_mat_static
+
+%replace with parfor
+parfor i=1:n    
+%     new_train_mat = spconvert([r new_c_key(c_loc_j) v]);
+
+    locp = logical(~ismember(Cp,pos_delete_col{i}));
+    locn = logical(~ismember(Cn,neg_delete_col{i}));
+    
+    Cp_adjusted = Cp(locp);
+    Cn_adjusted = Cn(locn);
+    
+    c_key = unique([Cp_adjusted;Cn_adjusted]);
+    n_cols = length(c_key);
+    new_c_key = [1:n_cols]';
+    feature_index = c_key(3:end)-2;
+        
+    [new_locp ind_locp] = ismember(Cp_adjusted,c_key);        
+    [new_locn ind_locn] = ismember(Cn_adjusted,c_key);
+    
+    positive_mat = spconvert([Rp(locp) new_c_key(ind_locp) Vp(locp); (max(Rp)+1) n_cols 0]);
+    positive_mat = positive_mat(find(sum(positive_mat(:,3:end),2)>0),:);      
+    
+    negative_mat = spconvert([Rn(locn) new_c_key(ind_locn) Vn(locn); (max(Rn)+1) n_cols 0]);
+    negative_mat = negative_mat(find(sum(negative_mat(:,3:end),2)>0),:); 
+    
+    train_mat = [positive_mat(1:n_train_positive,:);
+                 negative_mat(1:n_train_negative,:)];
+
+    test_mat = [positive_mat(end-n_test_positive+1:end,:);
+                negative_mat(end-n_test_negative+1:end,:)];
+    
+    mkdir([workingdir 'data/' num2str(model_id)]);
+    train_file = [workingdir 'data/' num2str(model_id) '/split' num2str(n_split) '_train' num2str(n) '_' datestr(now,'HHMMSS-mmddyy') '.train_data'];
+    test_file =  [workingdir 'data/' num2str(model_id) '/split' num2str(n_split) '_test'  num2str(n) '_' datestr(now,'HHMMSS-mmddyy') '.test_data'];
+    
+    fopen(train_file,'w+');
+    fopen(test_file,'w+');
+    fclose('all');
+
+    mat_sparse_2_svm_sparse(train_mat(:,2:end),train_file,false,true,train_mat(:,1));
+    mat_sparse_2_svm_sparse(test_mat(:,2:end),test_file,false,true,test_mat(:,1));     
+    
+    a = cell(1,5);
+    b = zeros(size(training_precisions,1),1);
+    c = zeros(size(test_mat,2)-1,1);
+    d = zeros(size(test_mat,1),1);
+    e = [];
+    
+    try
+        switch SVM_parameters{i,6}
+            case 'SOFIA'
+                [a b c d e] = sofia_evaluate_model(workingdir,model_ids(i),train_file,test_mat,n_split,training_precisions,...
+                                                   SVM_parameters{i,1},SVM_parameters{i,2},SVM_parameters{i,3},SVM_parameters{i,4},SVM_parameters{i,5});
+                weights{i} = [[0;feature_index] c];
+            case 'SGSVM'
+                [a b c d e] = sgsvm_evaluate_model(model_ids(i),train_mat,test_mat,n_split,training_precisions,...
+                                                   SVM_parameters{i,1},SVM_parameters{i,3},SVM_parameters{i,2},SVM_parameters{i,4},SVM_parameters{i,5});
+                weights{i} = [feature_index c];
+            case 'SVM PERF'
+                [a b c d e] = svmperf_evaluate_model(workingdir,model_ids(i),train_file,test_file,test_mat,n_split,training_precisions,...
+                                                     SVM_parameters{i,1},SVM_parameters{i,3},SVM_parameters{i,2},SVM_parameters{i,4},SVM_parameters{i,5},cell2mat(SVM_parameters(i,9:10)));
+                weights{i} = [feature_index c];
+        end
+        
+    catch MException
+          MException.message
+          for s=1:size(MException.stack)
+              MException.stack(s,1)
+          end
+          matlabpool close
+    end
+    
+    statistics{i} = a;
+    accuracy{i} = b;
+    scores{i} = d;
+    W{i} = e;
+    
+    %clear locp locn Cp_adjusted Cn_adjusted c_key n_cols new_c_key feature_index ind_locp ind_locn positive_mat negative_mat train_mat test_mat 
+end
+
+%      if length(find(train_mat(:,2)==1))~=n_train_positive ||...
+%         length(find(train_mat(:,2)==-1))~=n_train_negative ||...
+%         length(find(test_mat(:,2)==1))~=n_test_positive ||...
+%         length(find(test_mat(:,2)==-1))~=n_test_negative
+%          continue;
+%      end

@@ -1,0 +1,177 @@
+function create_active_experiment_datasets(conn,dataset_id)
+
+setdbprefs('DataReturnFormat','cellarray');
+
+query = ['SELECT num_claims, rcv_date, n_folds, test_rework_ratio, pool_rework_ratio, train_rework_ratio, train_fraction, frequency_threshold '...
+         'FROM active_dataset_def WHERE id = ' num2str(dataset_id)];
+parameters = sql_query(conn,query);    
+
+num_claims = parameters{1};
+rcv_date = parameters{2};
+n_folds = parameters{3};
+test_rework_ratio = parameters{4};
+pool_rework_ratio = parameters{5};
+train_rework_ratio = parameters{6};
+train_fraction = parameters{7};
+frequency_threshold = parameters{8};
+
+%% Fetch Claims
+
+[claim_mat claim_mat_claim_ids] = svm_fetch_claim_level_training_matrix_scaled(conn,'train');
+
+if ~isempty(rcv_date)
+    query = ['select * from (select distinct raw_claim_details_with_claim_ids.claim_id,mk_label.is_rework from raw_claim_details_with_claim_ids '...
+             'join mk_label on raw_claim_details_with_claim_ids.claim_id=mk_label.claim_id '...
+             'where RCV_DT>''' rcv_date ''') dt order by newid()'];
+elseif ~isnan(n_select_claims)
+    query = ['select * from (select TOP ' num_claims ' distinct raw_claim_details_with_claim_ids.claim_id,mk_label.is_rework from raw_claim_details_with_claim_ids '...
+             'join mk_label on raw_claim_details_with_claim_ids.claim_id=mk_label.claim_id '...
+             'order by RCV_DT asc) dt order by newid()'];
+end
+    
+claim_id_time_mat = sql_query(conn,query);
+
+%% Remove Unrequired features & claims
+
+tf = ismember(claim_mat_claim_ids,claim_id_time_mat(:,1));
+claim_mat = claim_mat(tf,:);
+
+active_features = [];
+%active_features = svm_perf_get_active_features(conn,0,model_id);
+[jk jk row_delete_vec] = svm_clean_feature_matrix(claim_mat,active_features,frequency_threshold);
+
+claim_id_time_mat = claim_id_time_mat(~(row_delete_vec),:);
+clear claim_mat
+
+%% Calculate Size of train, pool, test per split
+
+pos_claim_loc = find(claim_id_time_mat(:,2)==1);
+neg_claim_loc = find(claim_id_time_mat(:,2)==-1);
+n_claims_tot = size(claim_id_time_mat,1);
+
+n_claims_pos = length(pos_claim_loc);
+n_claims_neg = length(neg_claim_loc);
+act_rework_ratio = n_claims_pos/(n_claims_pos+n_claims_neg);
+
+n_pos_test = n_claims_pos/n_folds;
+n_neg_test = n_claims_neg/n_folds;
+neg2pos_factor = test_rework_ratio/(1-test_rework_ratio);
+
+if act_rework_ratio > test_rework_ratio    
+    desired_n_pos_test = neg2pos_factor*n_neg_test;
+    n_pos_test_sets = ceil(n_pos_test/floor(desired_n_pos_test));
+    desired_n_neg_test = n_neg_test;
+    n_neg_test_sets = 1;
+elseif act_rework_ratio < test_rework_ratio
+    desired_n_neg_test = n_pos_test/neg2pos_factor;
+    n_neg_test_sets = ceil(n_neg_test/floor(desired_n_neg_test));
+    desired_n_pos_test = n_pos_test;
+    n_pos_test_sets = 1;
+end
+
+n_pos_test = floor(n_pos_test);
+n_neg_test = floor(n_neg_test);
+n_spl_pos_test = floor(desired_n_pos_test);
+n_spl_neg_test = floor(desired_n_neg_test);
+
+pct_pos_pool = pool_rework_ratio*(1-train_fraction);
+pct_pos_train = train_rework_ratio*train_fraction; 
+pct_pos = pct_pos_pool+pct_pos_train;
+
+pct_neg_pool = (1-pool_rework_ratio)*(1-train_fraction);
+pct_neg_train = (1-train_rework_ratio)*train_fraction; 
+pct_neg = pct_neg_pool+pct_neg_train;
+
+nontest_fraction = (n_folds-1)/n_folds;
+
+if act_rework_ratio > pct_pos    
+    n_spl_neg_pool = floor(nontest_fraction*n_claims_neg*pct_neg_pool/pct_neg);
+    n_spl_neg_train = floor(nontest_fraction*n_claims_neg*pct_neg_train/pct_neg);    
+    n_spl_pos_pool = floor(n_spl_neg_pool*pct_pos_pool/pct_neg_pool);
+    n_spl_pos_train = floor(n_spl_neg_train*pct_pos_train/pct_neg_train);    
+elseif act_rework_ratio < pct_pos   
+    n_spl_pos_pool = floor(nontest_fraction*n_claims_pos*pct_pos_pool/pct_pos);
+    n_spl_pos_train = floor(nontest_fraction*n_claims_pos*pct_pos_train/pct_pos);    
+    n_spl_neg_pool = floor(n_spl_pos_pool*pct_neg_pool/pct_pos_pool);
+    n_spl_neg_train = floor(n_spl_pos_train*pct_neg_train/pct_pos_train);    
+end
+
+%% Define Split Indices
+pos_test_split_ids = zeros(n_spl_pos_test,n_pos_test_sets,n_folds);
+neg_test_split_ids = zeros(n_spl_neg_test,n_neg_test_sets,n_folds);
+pool_split_ids = zeros((n_spl_pos_pool+n_spl_neg_pool),n_folds);
+train_split_ids = zeros((n_spl_pos_train+n_spl_neg_train),n_folds);
+
+pos_claim_ids = claim_id_time_mat(pos_claim_loc);
+neg_claim_ids = claim_id_time_mat(neg_claim_loc);
+
+for i=2:n_folds
+    
+    insert(conn,'active_dataset_split_def',{'dataset_id','split_num'},{dataset_id i});
+    dataset_split_id = sql_query(conn,'select max(id) from active_dataset_split_def');
+    
+    % define positive test sets
+    start_i = ((i-1)*n_pos_test)+1;
+    end_i = i*n_pos_test;
+    pos_test_ids = pos_claim_ids(start_i:end_i,:);
+    
+    for j=1:n_pos_test_sets
+        start_j = ((j-1)*n_spl_pos_test)+1;
+        end_j = j*n_spl_pos_test;
+        if end_j > n_pos_test
+            random_j = randperm(start_j-1);
+            indices = [[start_j:n_pos_test] random_j(1:(end_j-n_pos_test))];
+        else
+            indices = [start_j:end_j];
+        end
+        pos_test_split_ids(:,j,i) = pos_test_ids(indices,1);
+        
+        insert(conn,'active_testset_def',{'isrework'},[1]);
+        test_set_id_pos(j) = sql_query(conn,'select max(id) from active_testset_def');       
+        insert(conn,'active_test_claims',{'testset_id','claim_id'},[repmat(test_set_id_pos(j),n_spl_pos_test,1)  pos_test_split_ids(:,j,i)]);
+    end
+    
+    % define negative test sets
+    start_i = ((i-1)*n_neg_test)+1;
+    end_i = i*n_neg_test;
+    neg_test_ids = neg_claim_ids(start_i:end_i,:);
+    
+    for j=1:n_neg_test_sets
+        start_j = ((j-1)*n_spl_neg_test)+1;
+        end_j = j*n_spl_neg_test;
+        if end_j > n_neg_test
+            random_j = randperm(start_j-1);
+            indices = [[start_j:n_pos_test] random_j(1:(end_j-n_pos_test))];
+        else
+            indices = [start_j:end_j];
+        end
+        neg_test_split_ids(:,j,i) = neg_test_ids(indices,:);
+        
+        insert(conn,'active_testset_def',{'isrework'},[0]);
+        test_set_id_neg(j) = sql_query(conn,'select max(id) from active_testset_def');       
+        insert(conn,'active_test_claims',{'testset_id','claim_id'},[repmat(test_set_id_neg(j),n_spl_neg_test,1)  neg_test_split_ids(:,j,i)]);
+    end
+    
+    n_test_combos = max(n_neg_test_sets,n_pos_test_sets);
+    if n_neg_test_sets > n_pos_test_sets
+        insert(conn,'active_dataset_trial_def',{'dataset_split_id','dataset_id','split_num','pos_testset_id','neg_testset_id'},...
+               [repmat(dataset_split_id,n_test_combos,1) repmat(dataset_id,n_test_combos,1) repmat(i,n_test_combos,1) repmat(test_set_id_pos,n_test_combos,1) test_set_id_neg']);
+    else
+        insert(conn,'active_dataset_trial_def',{'dataset_split_id','dataset_id','split_num','pos_testset_id','neg_testset_id'},...
+               [repmat(dataset_split_id,n_test_combos,1) repmat(dataset_id,n_test_combos,1) repmat(i,n_test_combos,1) test_set_id_pos' repmat(test_set_id_neg,n_test_combos,1)]);
+    end
+    
+    pos_nontest_ids = setdiff(pos_claim_ids,pos_test_ids(:,1));
+    neg_nontest_ids = setdiff(neg_claim_ids,neg_test_ids(:,1));
+    
+    random_pos_i = randperm(length(pos_nontest_ids));
+    random_neg_i = randperm(length(neg_nontest_ids));
+    
+    train_split_ids(:,i) = [pos_nontest_ids(random_pos_i(1:n_spl_pos_train));...
+                            neg_nontest_ids(random_neg_i(1:n_spl_neg_train))];
+    pool_split_ids(:,i) = [pos_nontest_ids(random_pos_i((end-n_spl_pos_pool+1):end));...
+                           neg_nontest_ids(random_neg_i((end-n_spl_neg_pool+1):end))];
+
+    insert(conn,'active_pool_claims',{'dataset_split_id','claim_id'},[repmat(dataset_split_id,length(pool_split_ids),1)  pool_split_ids(:,i)]);
+    insert(conn,'active_train_claims',{'dataset_split_id','claim_id'},[repmat(dataset_split_id,length(train_split_ids),1)  train_split_ids(:,i)]); 
+end

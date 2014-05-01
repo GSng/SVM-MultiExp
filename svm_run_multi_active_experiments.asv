@@ -1,0 +1,462 @@
+function svm_run_multi_active_experiments(conn,experiment_id,batch_no,origindir)
+
+% path(IBCPathDef,path);
+
+%% Load Models and Experiment Parameters
+setdbprefs('DataReturnFormat','cellarray');
+
+if strcmpi(conn.AutoCommit,'on')
+    disp 'Connected to Database...experiment starting.'
+else
+    disp 'Connection to Database failed...experiment aborting.'
+end
+
+cd('E:\cygwin\bin');
+common_dir = 'E:/Projects/SVMpipeline/active_eval/';
+
+if nargin<3
+    origindir = 'E:/Projects/SVMpipeline/';
+    cd(common_dir);
+end
+
+path([origindir 'svm_run_multi_exp'],path);
+
+if ~isscalar(experiment_id) || isempty(batch_no) || nargin<2
+    model_ids = experiment_id;
+elseif isscalar(experiment_id) && isscalar(batch_no)
+    query = ['SELECT DISTINCT training_model_id FROM training_models'...
+            ' WHERE experiment_id = ' int2str(experiment_id)...
+            ' AND batch_no = ' int2str(batch_no)'];
+    model_ids = sql_query(conn,query);
+end
+
+query = 'SELECT DISTINCT training_model_id FROM [rework_ibc].[dbo].[model_statistics] JOIN [rework_ibc].[dbo].[active_precisions_at_test_itr] ON  model_statistics.id = active_precisions_at_test_itr.model_statistic_id';
+existing_model_ids = sql_query(conn,query);
+
+if iscell(model_ids)
+    model_ids = cell2mat(model_ids);
+    existing_model_ids = cell2mat(existing_model_ids);
+end
+
+model_ids = setdiff(model_ids,existing_model_ids);
+n_models = length(model_ids);
+
+if n_models==0
+    return;
+end
+
+for i = 1:n_models
+    update(conn,'training_models',{'status_cd'},{'Pending'},...
+               ['where training_models.training_model_id = ', int2str(model_ids(i))]);
+end
+clear i
+
+training_precisions = [(1:99)' abs((1:99)'-100)];
+prinsert_cols = ['model_statistic_id' 'itr_num' 'dataset_trial_id' cellstr([repmat('pr',length(training_precisions),1) num2str(training_precisions(:,2))])'];
+prinsert_cols(end-8:end) = cellstr(['pr09'; 'pr08'; 'pr07' ;'pr06'; 'pr05' ;'pr04'; 'pr03' ;'pr02' ;'pr01'])';
+
+try
+    query = ['SELECT rework_ibc.dbo.model_training_precisions.precision FROM rework_ibc.dbo.model_training_precisions '...
+             'JOIN rework_ibc.dbo.experiments ON rework_ibc.dbo.experiments.model_training_precision_id = rework_ibc.dbo.model_training_precisions.id '...
+             'JOIN rework_ibc.dbo.training_models ON rework_ibc.dbo.training_models.experiment_id = rework_ibc.dbo.experiments.id '...
+             'WHERE rework_ibc.dbo.training_models.training_model_id = ' int2str(model_ids(1))];
+    display_precision = cell2mat(sql_query(conn,query));
+catch MException
+    display_precision = 90;
+end
+
+all_model_params = cell(n_models,18);
+
+all_model_params(:,13) = num2cell(model_ids);
+all_model_params(:,14) = {display_precision};
+
+query = ['SELECT DISTINCT [rework_ibc].[dbo].[model_classes].[name] FROM [rework_ibc].[dbo].[model_classes] '...
+         'JOIN [rework_ibc].[dbo].[experiments] ON model_classes.id=experiments.model_class_id '...
+         'JOIN [rework_ibc].[dbo].[training_models] ON training_models.experiment_id=experiments.id '...
+         'WHERE training_models.training_model_id=' int2str(model_ids(1))];
+all_model_params(:,15) = sql_query(conn,query);
+svm_type = all_model_params{1,15}; 
+
+try
+    origin_dir = svm_get_model_param(conn, model_ids(1),'working_dir',false);
+    if ~isempty(working_dir) && nargin<3
+        origindir = origin_dir;
+    end
+catch MException
+end   
+    
+for i=1:n_models            
+            
+    if ~isempty(strfind(svm_type,'SOFIA'))
+        all_model_params{i,2}  = svm_get_model_param(conn, model_ids(i),'c_value',true);
+        all_model_params(i,3)  = strtrim(svm_get_model_param(conn, model_ids(i),'learner_type',false));
+        all_model_params(i,4)  = strtrim(svm_get_model_param(conn, model_ids(i),'loop_type',false));
+        all_model_params{i,6}  = svm_get_model_param(conn, model_ids(i),'n_value',true);
+        all_model_params(i,7)  = svm_get_model_param(conn, model_ids(i),'input_model',false);
+        all_model_params{i,15} = 'SOFIA';
+    elseif ~isempty(strfind(svm_type,'SVMperf'))
+        all_model_params{i,2} = svm_get_model_param(conn,model_ids(i),'c_value',true);
+        all_model_params{i,3} = svm_get_model_param(conn,model_ids(i),'e_value',true);
+        all_model_params{i,4} = svm_get_model_param(conn,model_ids(i),'l_value',true);
+        all_model_params{i,6} = svm_get_model_param(conn,model_ids(i),'w_value',true);
+        all_model_params{i,7} = svm_get_model_param(conn,model_ids(i),'t_value',true);
+        if all_model_params{i,7} ~= 0
+            all_model_params{i,16} = svm_get_model_param(conn,model_ids(i),'d_g_s_value',true);
+            if all_model_params{i,16} == 3
+                all_model_params{i,17} = svm_get_model_param(conn,model_ids(i),'r_value',true);
+            end
+        end
+        all_model_params{i,15} = 'SVM PERF';
+    end            
+    all_model_params{i,1}  = svm_get_model_param(conn, model_ids(i),'split_num',true);
+    all_model_params{i,5}  = svm_get_model_param(conn, model_ids(i),'base_tf',true);
+    all_model_params{i,8}  = svm_get_model_param(conn, model_ids(i),'n_queries',true);
+    all_model_params(i,9)  = strtrim(svm_get_model_param(conn, model_ids(i),'query_strategy',false));
+    all_model_params{i,10} = svm_get_model_param(conn, model_ids(i),'query_strategy_param',true);
+    all_model_params{i,11} = svm_get_model_param(conn, model_ids(i),'model_strategy',true);
+    all_model_params{i,12} = svm_get_model_param(conn, model_ids(i),'model_strategy_param',true);
+    all_model_params{i,18} = svm_get_model_param(conn, model_ids(i),'dataset_id',true);
+end
+svm_type = all_model_params{1,15}; 
+
+[dataset_vec dataset_i] = sortrows(all_model_params(:,18));
+[datasets dataset_j] = uniqueRowsCA(dataset_vec,[],'first');
+[datasets dataset_k] = uniqueRowsCA(dataset_vec,[],'last');
+
+% all_model_params = model_param_mat; clear model_param_mat;
+
+for n=1:length(datasets)
+    dataset_id = datasets{n};    
+    model_param_mat = all_model_params(dataset_i(dataset_j(n):dataset_k(n)),:);    
+    
+    [exp_cond_mat   I] = sortrows(model_param_mat(:,1:4));    
+    [data_param_mat J] = uniqueRowsCA(exp_cond_mat,[],'first');
+    [data_param_mat K] = uniqueRowsCA(exp_cond_mat,[],'last');
+
+    Z = K-J+1;    
+    model_id_mat = zeros(length(Z),max(Z));
+    for i=1:length(J)
+        model_id_mat(i,1:Z(i)) = model_ids(I(J(i):K(i)));
+    end
+    clear I J K Z exp_cond_mat
+
+    [exp_cond_vec   I] = sortrows(data_param_mat(:,1));    
+    [n_split_vec J] = uniqueRowsCA(exp_cond_vec,[],'first');
+    [n_split_vec K] = uniqueRowsCA(exp_cond_vec,[],'last');
+
+    Z = K-J+1;
+    model_id_cube = cell(max(Z),4,length(Z));
+    for i=1:length(J)
+        model_id_cube(1:Z(i),1,i) = mat2cell(model_id_mat(I(J(i):K(i)),:),ones(Z(i),1),size(model_id_mat,2));
+        model_id_cube(1:Z(i),2:4,i) = data_param_mat(I(J(i):K(i)),2:4);
+    end
+    clear I J K Z exp_cond_vec
+
+    for i=1:length(n_split_vec)
+    %% Initialize Matrices
+        splitNum = int2str(n_split_vec{i});
+        dataset_id_str = int2str(dataset_id);
+        
+        load([common_dir 'claim_mat.mat']);
+        load([common_dir 'claim_mat_ids.mat']);
+        
+        workingDir = [origindir 'active_eval/workspace' dataset_id_str '_split' splitNum];
+        commonDir =  [common_dir 'workspace' dataset_id_str '_split' splitNum];
+        mkdir(commonDir);
+        mkdir(workingDir);
+        
+        %load claim_id matrices               
+        frequency_threshold = cell2mat(sql_query(conn,['SELECT frequency_threshold FROM [rework_ibc].[dbo].[active_dataset_def] WHERE id = ' num2str(dataset_id)]));
+        
+        dataset_split_id = num2str(cell2mat(sql_query(conn,['SELECT id FROM [rework_ibc].[dbo].[active_dataset_split_def] WHERE dataset_id = ' dataset_id_str ' AND split_num = ' splitNum])));        
+        pool_claim_ids = sql_query(conn,['SELECT claim_id FROM [rework_ibc].[dbo].[active_pool_claims] WHERE dataset_split_id = ' dataset_split_id]);
+        train_claim_ids = sql_query(conn,['SELECT claim_id FROM [rework_ibc].[dbo].[active_train_claims] WHERE dataset_split_id = ' dataset_split_id]);        
+        testset_ids = sql_query(conn,['SELECT id, pos_testset_id, neg_testset_id FROM [rework_ibc].[dbo].[active_dataset_trial_def] WHERE dataset_split_id = ' dataset_split_id]);
+        
+        if iscell(dataset_split_id)
+            dataset_split_id = cell2mat(dataset_split_id);
+        end
+        if iscell(pool_claim_ids)
+            pool_claim_ids = cell2mat(pool_claim_ids);
+        end
+        if iscell(train_claim_ids);
+            train_claim_ids = cell2mat(train_claim_ids);
+        end
+        if iscell(testset_ids);
+            testset_ids = cell2mat(testset_ids);
+        end
+            
+        trial_ids = testset_ids(:,1);
+        pos_testset_ids = testset_ids(:,2);
+        neg_testset_ids = testset_ids(:,3);
+        clear testset_ids;
+        
+        l_pos_testset = length(cell2mat(sql_query(conn,['SELECT claim_id FROM [rework_ibc].[dbo].[active_test_claims] WHERE testset_id = ' num2str(pos_testset_ids(1))])));
+        l_neg_testset = length(cell2mat(sql_query(conn,['SELECT claim_id FROM [rework_ibc].[dbo].[active_test_claims] WHERE testset_id = ' num2str(neg_testset_ids(1))])));
+        n_trials = length(trial_ids);
+        pos_testset_claim_id_mat = zeros(l_pos_testset,n_trials);
+        neg_testset_claim_id_mat = zeros(l_neg_testset,n_trials);
+        
+        for d=1:n_trials
+            pos_testset_claim_id_mat(:,d) = cell2mat(sql_query(conn,['SELECT claim_id FROM [rework_ibc].[dbo].[active_test_claims] WHERE testset_id = ' num2str(pos_testset_ids(d))]));
+            neg_testset_claim_id_mat(:,d) = cell2mat(sql_query(conn,['SELECT claim_id FROM [rework_ibc].[dbo].[active_test_claims] WHERE testset_id = ' num2str(neg_testset_ids(d))]));
+        end
+        testset_claim_id_mat = [pos_testset_claim_id_mat;neg_testset_claim_id_mat]; clear pos_testset_claim_id_mat neg_testset_claim_id_mat l_pos_testset l_neg_testset;
+        
+        req_claim_ids = unique([pool_claim_ids; train_claim_ids; reshape(testset_claim_id_mat,numel(testset_claim_id_mat),[])]);
+        
+        %load claim features matrix
+%         [claim_mat claim_mat_ids] = svm_fetch_claim_level_training_matrix_scaled(conn,'train');
+        claim_loc = ismember(claim_mat_ids,req_claim_ids);
+        claim_mat = claim_mat(claim_loc,:);
+        claim_mat_ids = claim_mat_ids(claim_loc); clear req_claim_ids;
+        
+        %shrink matrix of claim features
+        [r c v] = find(claim_mat(:,1:end));
+
+        feature_frequency_count = sum(sparse(r,c,1),1)';
+        delete_cols = find(feature_frequency_count<frequency_threshold);
+        new_c = setdiff(c,delete_cols);
+        new_c_loc = logical(ismember(c,new_c));
+
+        r = r(new_c_loc);
+        c = c(new_c_loc);
+        v = v(new_c_loc);
+
+        [c_key,jk,c_loc_j] = unique(c);
+        Nfeatures = length(c_key);
+        new_c_key = [1:Nfeatures]';    
+        new_claim_mat = spconvert([r new_c_key(c_loc_j) v]);
+        clear claim_mat r c v claim_loc feature_frequency_count delete_cols new_c new_c_loc new_c_key c_loc_j;
+
+        %derive train and pool matrices       
+        [jk,loc] = ismember(pool_claim_ids,claim_mat_ids);
+        pool_matrix = new_claim_mat(loc,:); clear loc;
+        [jk,loc] = ismember(train_claim_ids,claim_mat_ids);  
+        train_matrix = new_claim_mat(loc,:); clear loc;
+
+        active_ids = [train_claim_ids;pool_claim_ids];
+
+        %write claim feature matrix to SVM format for fast I/O
+        active_file = [commonDir,'/activeMatrix_split',splitNum,'.raw_data'];
+        if fopen(active_file,'r')>0
+            fclose('all');
+        else
+            mat_sparse_2_svm_sparse_mk([train_matrix;pool_matrix],active_file,false);
+        end
+
+        avg_sim_sort_cosine =[];
+        avg_sim_sort_euclid =[];    
+        query_strategies = unique(model_param_mat(find(cell2mat(model_param_mat(:,1))==str2num(splitNum)),9));
+    %     Ls = size(query_strategies,1);
+
+        iscluster = ~isempty(cell2mat(strfind(strcat(query_strategies),'clus')));
+        isconf   = ~isempty(cell2mat(strfind(strcat(query_strategies),'conf')));
+        iscosine = iscluster + isconf + ~isempty(cell2mat(strfind(strcat(query_strategies),'cos')));
+        iscosknn = ~isempty(cell2mat(strfind(strcat(query_strategies),'knn')))*(iscosine-iscluster-isconf);
+        iseuclid = ~isempty(cell2mat(strfind(strcat(query_strategies),'eucl')));
+        iseucknn = ~isempty(cell2mat(strfind(strcat(query_strategies),'knn')))*iseuclid;
+        
+        Qx = [];
+        avg_sim_sort_cosine = [];
+        avg_sim_sort_euclid = [];
+        similarity_mat_cosine = [];
+        similarity_mat_euclid = [];
+        
+        if iscosine 
+            similarity_mat = load([commonDir,'/similarity_matrix_cosine_split' splitNum '_activepool.mat']);
+            if isstruct(similarity_mat)
+                similarity_mat = similarity_mat.similarity_matrix;
+            end
+            
+            if iscluster
+                try 
+                    load([commonDir,'/cluster_cosine_split',splitNum,'_lt05.mat'])
+                catch               
+                    A = similarity_mat<0.5;
+                    [jk,jk,jk,jk,Qx] = cc_search(A,'hellscream',true);
+                    save([commonDir,'/cluster_cosine_split',splitNum,'_lt05.mat'],'Qx');
+                end
+            end
+            
+            avg_sim(:,1) = mean(similarity_mat(:,:));
+            avg_sim(:,2) = pool_claim_ids;
+            avg_sim_sort_cosine = sortrows(avg_sim,1);
+            
+            if iscosknn
+                similarity_mat_cosine = similarity_mat;
+            end
+            clear similarity_mat avg_sim;
+        end
+        if iseuclid
+            similarity_mat = load([commonDir,'/similarity_matrix_euclid_split' splitNum '_activepool.mat']);
+            if isstruct(similarity_mat)
+                similarity_mat = similarity_mat.similarity_matrix;
+            end
+            
+            avg_sim(:,1) = mean(similarity_mat(:,:));
+            avg_sim(:,2) = pool_claim_ids;
+            avg_sim_sort_euclid = sortrows(avg_sim,1);
+            
+            if iseucknn
+                similarity_mat_euclid = similarity_mat;
+            end
+            clear similarity_mat avg_sim;
+        end
+
+        print_lines2file_script_filename = [origindir 'svm_run_multi_exp/print-lines-to-file.pl'];
+        active_file = strrep(active_file,'E:/','/cygdrive/e/');
+        print_lines2file_script_filename = strrep(print_lines2file_script_filename,'E:/','/cygdrive/e/');
+
+        clear query_strategies iscluster isconf iscosine iscosknn iscosknn iseuclid iseucknn 
+
+        for j=1:size(model_id_cube(:,:,i),1)        
+    %% Initialize Base
+
+            model_ids_j = model_id_cube{j,1,i};
+            model_ids_j = model_ids_j(model_ids_j>0);        
+
+            [jk,model_ids_j_loc] = ismember(model_ids_j,cell2mat(model_param_mat(:,13)));
+            model_ids_j_param = model_param_mat(model_ids_j_loc,:);
+
+            base_precisions = zeros(n_trials,(length(training_precisions)+2));
+            base_precisions(:,1) = 1;
+            base_precisions(:,2) = trial_ids;
+            base_model_file = [];
+
+            if sum(cell2mat(model_ids_j_param(:,5)))
+                c_value = model_id_cube{j,2,i};
+
+                base_train_file = [commonDir '/base_model_split' splitNum '.train_data'];            
+                if fopen(base_train_file,'r')>0                               
+                    fclose('all');
+                else
+                    base_train_rowNum_file = [commonDir '/base_model_split' splitNum '.row_num'];                                
+                    [jk,loc] = ismember(train_claim_ids,active_ids);
+                    fprintf(fopen(base_train_rowNum_file,'w'),'%u\n',sort(loc)); fclose('all');   
+                    eval(['!perl -w ',print_lines2file_script_filename,' ',active_file,' ',base_train_file,' ',base_train_rowNum_file]);
+                end
+
+                if strcmpi(svm_type,'SOFIA')
+                    learner_type = model_id_cube{j,3,i};
+                    loop_type = model_id_cube{j,4,i};
+
+                    base_model_file = [commonDir '/base_model_split'...
+                                       splitNum '_' int2str(c_value) '_' learner_type  '_' loop_type '.model'];            
+                    if fopen(base_model_file,'r')>0                               
+                        fclose('all');                              
+                    else
+                        lambda = num2str(1/c_value);
+                        base_model_file = sofia_run_training(origindir,Nfeatures,learner_type,loop_type,lambda,'10000000',base_train_file,base_model_file);
+                        clear base_train_file base_train_rowNum_file lambda learner_type loop_type c_value
+                    end
+
+                    W = textread(base_model_file)';
+                    bias = W(1);
+                    W = W(2:end);
+
+                elseif strcmpi(svm_type,'SVM PERF')
+
+                    c_value = num2str(c_value);
+                    e_value = num2str(model_id_cube{j,3,i});
+                    l_value = num2str(model_id_cube{j,4,i});
+                    w_value = num2str(model_param_mat{1,6});
+
+                    base_model_file = [commonDir '/base_model_split'...
+                                       splitNum '_' c_value '_' e_value  '_' l_value '_' w_value '.model'];            
+                    if fopen(base_model_file,'r')>0                               
+                        fclose('all');                              
+                    else                    
+                        svm_perf_run_training(origindir, base_train_file, base_model_file, c_value, e_value, l_value, w_value)
+                        clear base_train_file base_train_rowNum_file c_value e_value l_value w_value
+                    end
+
+                    W = zeros(Nfeatures-1,1);
+                    feature_score_mat = svm_read_model_file(base_model_file);               
+                    W(feature_score_mat(:,1)) = feature_score_mat(:,2);
+                    bias = 0;
+                end
+
+                for sample=1:n_trials
+                    base_precisions(sample,1) = 1;
+                    base_precisions(sample,2) = trial_ids(sample);
+                    [jk,loc] = ismember(testset_claim_id_mat(:,sample),claim_mat_ids);                                
+                    new_test_mat = new_claim_mat(loc,:);
+                    test_scores = new_test_mat(:,2:end)*W+bias;
+                    test_labels = new_test_mat(:,1);
+                    base_precisions(sample,3:end) = precision_calc(test_scores,test_labels,training_precisions);
+                    clear test_scores test_labels new_test_mat
+                end
+
+            end 
+     %% train models       
+
+            K = length(model_ids_j);
+            statistics = cell(K,1);
+            weights = cell(K,1);
+            precision_avg = cell(K,1);
+            precisions = cell(K,1);
+
+            matlabpool
+            parfor k=1:K  
+                 model_id_param = model_ids_j_param(k,:);
+
+                avg_sim_sort = [];
+                if ~isempty(strfind(model_id_param{9},'cos')) || ~isempty(strfind(model_id_param{9},'conf'))
+                    avg_sim_sort = avg_sim_sort_cosine;
+                elseif ~isempty(strfind(model_id_param{9},'euc'))
+                    avg_sim_sort = avg_sim_sort_euclid;
+                elseif ~isempty(strfind(model_id_param{9},'clus'))
+                    [tf loc] = ismember(pool_claim_ids,avg_sim_sort_cosine(:,2));
+                    avg_sim_sort = [Qx pool_claim_ids avg_sim_sort_cosine(loc,1)];
+                elseif ~isempty(strfind(model_id_param{9},'knn')) && ~isempty(strfind(model_id_param{9},'cos'))
+                    avg_sim_sort = similarity_mat_cosine;
+                elseif ~isempty(strfind(model_id_param{9},'knn')) && ~isempty(strfind(model_id_param{9},'euc'))
+                    avg_sim_sort = similarity_mat_euclid;                
+                end                
+                
+                try
+                [e f g h] = svm_multi_active_learn(origindir,workingDir,model_id_param,training_precisions,active_file,active_ids,pool_matrix,pool_claim_ids,...
+                                                   new_claim_mat,testset_claim_id_mat, trial_ids, claim_mat_ids,train_claim_ids,train_matrix,...
+                                                   avg_sim_sort,base_model_file,base_precisions,print_lines2file_script_filename);
+                catch MException
+                    model_id_param{13}
+                    keyboard;
+                end
+                statistics{k} = e;
+                weights{k} = f;
+                precision_avg{k} = [[1:length(g)]' g];
+                precisions{k} = h;
+
+            end
+            matlabpool close
+
+            for k=1:K
+                
+                insert(conn,'model_statistics',{'training_model_id','start_time','end_time','run_duration','n_split'},statistics{k});
+                
+                model_stat_id = sql_query(conn,'select max(id) from model_statistics');
+                if iscell(model_stat_id)
+                    model_stat_id = cell2mat(model_stat_id);
+                end
+                
+                insert(conn,'feature_training_model_weights',{'model_statistic_id','feature_id','weight'},...
+                            [repmat(model_stat_id,size(weights{k},1),1) c_key weights{k}]);
+
+                insert(conn,'model_statistic_details',{'model_training_precision_id','model_statistic_id','accuracy'},...
+                            [precision_avg{k}(:,1) repmat(model_stat_id,size(precision_avg{k},1),1) precision_avg{k}(:,2)]);
+                        
+                insert(conn,'active_precisions_at_test_itr',prinsert_cols,[repmat(model_stat_id,size(precisions{k},1),1) precisions{k}]);
+                
+                update(conn,'training_models',{'status_cd'},{'Finished'},['where training_models.training_model_id = ', int2str(model_ids_j_param{k,13})]);
+             end
+        end
+    end
+end
+% 
+% training_precisions = [(1:99)' abs((1:99)'-100)];
+% prinsert_cols = ['model_statistic_id' 'itr_num' 'dataset_trial_id' cellstr([repmat('pr',length(training_precisions),1) num2str(training_precisions(:,2))])'];
+% prinsert_cols(end-8:end) = cellstr(['pr09'; 'pr08'; 'pr07' ;'pr06'; 'pr05' ;'pr04'; 'pr03' ;'pr02' ;'pr01'])';
+% precisions = reshape(permute(master_arrayOfmetric,[1 3 2]),[],(99+2));
+% insert(conn,'active_precisions_at_test_itr',prinsert_cols,[repmat(model_s
+% tat_id,size(precisions,1),1) precisions]);

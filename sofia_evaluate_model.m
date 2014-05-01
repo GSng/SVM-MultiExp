@@ -1,0 +1,42 @@
+function [statistics accuracy weights scores W_] = sofia_evaluate_model(workingdir, model_id, train_file, test_mat, n_split, training_precisions,...
+                                                                        C, iterations, learner_type, loop_type, w0)
+W_=[];
+
+model_start_run_time = datestr(now);
+
+test_mat_temp = test_mat; clear test_mat
+test_claim_ids = test_mat_temp(:,1);
+real_test_labels = test_mat_temp(:,2);
+test_mat = test_mat_temp(:,3:end); clear test_mat_temp
+
+mkdir([workingdir 'data/' num2str(model_id)]);
+model_file_name = [workingdir 'data/' num2str(model_id) '/split' num2str(n_split) '_model_' num2str(model_id) '.model'];
+
+lambda = 1/C;
+Nfeatures = size(test_mat,2)+1;
+
+%% Run SVM
+tic
+
+if w0{1,1}~=0
+    fprintf(fopen(model_file_name,'w'),'%g ',w0); fclose('all');                   
+    model_file_name = sofia_run_training(workingdir,Nfeatures,learner_type,loop_type,num2str(lambda),num2str(iterations),train_file,model_file_name,model_file_name);
+else
+    model_file_name = sofia_run_training(workingdir,Nfeatures,learner_type,loop_type,num2str(lambda),num2str(iterations),train_file,model_file_name);
+end
+
+W = textread(model_file_name)';
+bias = W(1);
+W = W(2:end);
+
+test_scores = test_mat*W+bias;
+
+run_time = toc;
+model_end_run_time = datestr(now);
+
+%% Calculate Accuracy
+
+accuracy = precision_calc(test_scores,real_test_labels,training_precisions);
+statistics = {model_id,model_start_run_time,model_end_run_time,run_time,n_split,train_file};
+weights = [bias; W];
+scores = full([test_claim_ids test_scores]);

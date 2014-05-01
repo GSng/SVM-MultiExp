@@ -1,0 +1,113 @@
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/analytics/!svn/ver/50/rework/etl_feature_extract_sql
+END
+LOAD_RAW_INTO_CLAIM_HEADERS.sql
+K 25
+svn:wc:ra_dav:version-url
+V 89
+/svn/analytics/!svn/ver/83/rework/etl_feature_extract_sql/LOAD_RAW_INTO_CLAIM_HEADERS.sql
+END
+CREATE_TABLE_FROM_QUERY.sql
+K 25
+svn:wc:ra_dav:version-url
+V 85
+/svn/analytics/!svn/ver/83/rework/etl_feature_extract_sql/CREATE_TABLE_FROM_QUERY.sql
+END
+UPDATE_CLUSTER_DETAIL_STATS.sql
+K 25
+svn:wc:ra_dav:version-url
+V 89
+/svn/analytics/!svn/ver/83/rework/etl_feature_extract_sql/UPDATE_CLUSTER_DETAIL_STATS.sql
+END
+EXTRACT_CLAIM_LEVEL_LINE_SUMMARY_STAT_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 109
+/svn/analytics/!svn/ver/124/rework/etl_feature_extract_sql/EXTRACT_CLAIM_LEVEL_LINE_SUMMARY_STAT_FEATURES.sql
+END
+EXTRACT_DEPENDENT_CONTINUOUS_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 99
+/svn/analytics/!svn/ver/50/rework/etl_feature_extract_sql/EXTRACT_DEPENDENT_CONTINUOUS_FEATURES.sql
+END
+UPDATE_CLAIM_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 84
+/svn/analytics/!svn/ver/124/rework/etl_feature_extract_sql/UPDATE_CLAIM_FEATURES.sql
+END
+EXTRACT_CLAIM_LEVEL_ERROR_RATE_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 102
+/svn/analytics/!svn/ver/124/rework/etl_feature_extract_sql/EXTRACT_CLAIM_LEVEL_ERROR_RATE_FEATURES.sql
+END
+EXTRACT_DEPENDENT_CONTINUOUS_CLAIM_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 106
+/svn/analytics/!svn/ver/124/rework/etl_feature_extract_sql/EXTRACT_DEPENDENT_CONTINUOUS_CLAIM_FEATURES.sql
+END
+LOAD_RAW_INTO_CLAIM_DETAILS.sql
+K 25
+svn:wc:ra_dav:version-url
+V 89
+/svn/analytics/!svn/ver/83/rework/etl_feature_extract_sql/LOAD_RAW_INTO_CLAIM_DETAILS.sql
+END
+EXTRACT_CONTINUOUS_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 89
+/svn/analytics/!svn/ver/50/rework/etl_feature_extract_sql/EXTRACT_CONTINUOUS_FEATURES.sql
+END
+BACKUP_EXTRACT_DERIVED_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 93
+/svn/analytics/!svn/ver/83/rework/etl_feature_extract_sql/BACKUP_EXTRACT_DERIVED_FEATURES.sql
+END
+LOAD_RAW_INTO_CUSTOM_TABLES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 89
+/svn/analytics/!svn/ver/83/rework/etl_feature_extract_sql/LOAD_RAW_INTO_CUSTOM_TABLES.sql
+END
+RUN_ETL.sql
+K 25
+svn:wc:ra_dav:version-url
+V 69
+/svn/analytics/!svn/ver/83/rework/etl_feature_extract_sql/RUN_ETL.sql
+END
+EXTRACT_DERIVED_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 87
+/svn/analytics/!svn/ver/124/rework/etl_feature_extract_sql/EXTRACT_DERIVED_FEATURES.sql
+END
+INSERT_INTO_TABLE_FROM_QUERY.sql
+K 25
+svn:wc:ra_dav:version-url
+V 90
+/svn/analytics/!svn/ver/83/rework/etl_feature_extract_sql/INSERT_INTO_TABLE_FROM_QUERY.sql
+END
+EXTRACT_DISCONTINUOUS_FEATURES_BY_QUERY.sql
+K 25
+svn:wc:ra_dav:version-url
+V 102
+/svn/analytics/!svn/ver/124/rework/etl_feature_extract_sql/EXTRACT_DISCONTINUOUS_FEATURES_BY_QUERY.sql
+END
+EXTRACT_CONTINUOUS_FEATURES_BY_QUERY.sql
+K 25
+svn:wc:ra_dav:version-url
+V 99
+/svn/analytics/!svn/ver/124/rework/etl_feature_extract_sql/EXTRACT_CONTINUOUS_FEATURES_BY_QUERY.sql
+END
+EXTRACT_CLAIM_LEVEL_STDEV_AGGREGATE_FEATURES.sql
+K 25
+svn:wc:ra_dav:version-url
+V 107
+/svn/analytics/!svn/ver/124/rework/etl_feature_extract_sql/EXTRACT_CLAIM_LEVEL_STDEV_AGGREGATE_FEATURES.sql
+END

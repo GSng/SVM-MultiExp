@@ -1,0 +1,348 @@
+function svm_run_multi_experiment(experiment_id,batch_no,workingdir,exp_type,conn)
+
+cd E:\Projects\SVMpipeline\svm_run_multi_exp
+
+if nargin <5
+    conn = database('rework_wlp','sa','accenture','com.microsoft.sqlserver.jdbc.SQLServerDriver','jdbc:sqlserver://pinetree:1433;database=rework_wlp');
+end
+setdbprefs('DataReturnFormat','numeric');
+
+if nargin <3
+    workingdir = 'E:/Projects/SVMpipeline/';
+end
+
+if nargin <4
+    exp_type = 'default';
+end
+
+if strcmpi(conn.AutoCommit,'on')
+    disp 'Connected to Database...experiment starting.'
+else
+    disp 'Connection to Database failed...experiment aborting.'
+end
+
+if ~isscalar(experiment_id) || nargin<2
+    model_ids = experiment_id;
+    
+    query = ['SELECT DISTINCT model_classes.name FROM model_classes'...
+            ' JOIN experiments ON (model_classes.id=experiments.model_class_id)'...
+            ' JOIN training_models ON (experiments.id=training_models.experiment_id)'...
+            ' WHERE training_model_id = ' int2str(experiment_id)];
+    
+elseif isscalar(experiment_id) && isscalar(batch_no)
+    query = ['SELECT DISTINCT training_model_id FROM training_models'...
+            ' WHERE experiment_id = ' int2str(experiment_id)...
+            ' AND batch_no = ' int2str(batch_no)'];
+    model_ids = sql_query(conn,query);
+    
+    query = ['SELECT DISTINCT model_classes.name FROM model_classes'...
+             ' JOIN experiments ON model_classes.id=experiments.model_class_id'...
+             ' WHERE experiments.id = ' int2str(experiment_id)];
+end
+
+setdbprefs('DataReturnFormat','cellarray');
+exp_class = sql_query(conn,query); 
+setdbprefs('DataReturnFormat','numeric');
+if ~isempty(strfind(lower(exp_class{1}),'temporal'))
+    train_by_type = 'temporal';
+else
+    train_by_type = 'random';
+end
+
+if iscell(model_ids)
+    model_ids = cell2mat(model_ids);
+end
+
+n_models = length(model_ids);
+N_complete = 0;
+h = waitbar(N_complete,'Experiment Running.. 0% complete');
+for i = 1:n_models
+    update(conn,'training_models',{'status_cd'},{'Pending'},...
+               ['where training_models.training_model_id = ', int2str(model_ids(i))]);
+end
+clear i
+
+%determine if label = is_rework/is_overpay/is_underpay...
+try
+    label_type_1 = strtrim(char(svm_get_model_param(conn,model_ids(1),'label_type',false)));
+    label_type_2 = strtrim(char(svm_get_model_param(conn,model_ids(end),'label_type',false)));
+    if ~strcmpi(label_type_1,label_type_2)
+        disp('ERROR!')
+        return
+    else
+        if isempty(label_type_1)
+            label_type = 'is_rework';
+        else
+            label_type = label_type_1;
+        end
+        clear label_type_1 label_type_2
+    end
+catch
+    label_type = 'is_rework';
+end
+
+test_sp_case_mat = [];
+train_sp_case_mat = [];
+best_model_flag = 0;
+
+  
+if (strcmpi(label_type,'is_underpay') || strcmpi(label_type,'is_overpay')) 
+    [claim_mat claim_level_claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,'train',[],[],label_type);
+    claim_mat = [claim_level_claim_ids claim_mat];    
+
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE ' label_type ' IS NULL AND is_rework IS NOT NULL'];
+    [test_sp_case_mat claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],label_type);
+    test_sp_case_mat = [claim_ids test_sp_case_mat];
+elseif strcmpi(label_type,'is_not_overpay')
+    label_type = 'is_underpay';
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE is_rework IS NOT NULL'];
+    [claim_mat claim_level_claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],label_type);
+    claim_mat = [claim_level_claim_ids claim_mat];
+elseif strcmpi(label_type,'is_not_underpay')
+    label_type = 'is_overpay';
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE is_rework IS NOT NULL'];
+    [claim_mat claim_level_claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],label_type);
+    claim_mat = [claim_level_claim_ids claim_mat];
+elseif strcmpi(label_type,'is_rework_tot_phase2_test')
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE is_rework_phase1 IS NOT NULL'];
+    [claim_mat claim_level_claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],'is_rework_tot');
+    claim_mat = [claim_level_claim_ids claim_mat];    
+
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE is_rework_phase2 IS NOT NULL'];
+    [test_sp_case_mat claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],'is_rework_tot');
+    test_sp_case_mat = [claim_ids test_sp_case_mat];
+elseif strcmpi(label_type,'is_not_underpay_tot_phase2_test')
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE is_not_underpay_phase1 IS NOT NULL'];
+    [claim_mat claim_level_claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],'is_not_underpay_tot');
+    claim_mat = [claim_level_claim_ids claim_mat];    
+
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE is_not_underpay_phase2 IS NOT NULL'];
+    [test_sp_case_mat claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],'is_not_underpay_tot');
+    test_sp_case_mat = [claim_ids test_sp_case_mat];
+elseif strcmpi(label_type,'is_not_overpay_tot_phase2_test')
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE is_not_overpay_phase1 IS NOT NULL'];
+    [claim_mat claim_level_claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],'is_not_overpay_tot');
+    claim_mat = [claim_level_claim_ids claim_mat];    
+
+    query = ['SELECT DISTINCT claim_id FROM claim_labels WHERE is_not_overpay_phase2 IS NOT NULL'];
+    [test_sp_case_mat claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query,[],[],'is_not_overpay_tot');
+    test_sp_case_mat = [claim_ids test_sp_case_mat];   
+%     case 'historical claim detection'
+%         [claim_mat claim_level_claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,'train');
+%         claim_mat = [claim_level_claim_ids claim_mat];
+%         
+%         query = ['SELECT DISTINCT [raw_claim_details_with_claim_ids].[claim_id]'...
+%                 ' FROM [rework_ibc].[dbo].[mk_audit_results5] JOIN [rework_ibc].[dbo].[raw_claim_details_with_claim_ids]'...
+%                 ' ON [mk_audit_results5].[XREF_MHS_CLM_ID] = [raw_claim_details_with_claim_ids].[XREF_MHS_CLM_ID]'...
+%                 ' WHERE [mk_audit_results5].[is_rework] = ''Yes'''... 
+%                 ' AND ([raw_claim_details_with_claim_ids].[RCV_DT] BETWEEN ''2008-01-01 00:00:00.000'' AND ''2009-01-01 00:00:00.000'')'];
+%         [test_sp_case_mat claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,query);
+%         test_sp_case_mat = [claim_ids test_sp_case_mat];
+%         
+%     case 'line level'    
+%         %[line_mat line_level_claim_ids line_no] = svm_perf_fetch_line_level_training_matrix_scaled(conn,'train');
+%     
+%     case 'temporal'   
+%         %get the claims and time
+%         %setdbprefs('DataReturnFormat','cellarray');
+%         %query = 'select distinct claim_id,fdos from source_table where is_rework is not null and fdos is not null order by fdos';
+%         %claim_id_time = sql_query(conn,query);
+%         %claim_id_time_mat = [cell2mat(claim_id_time(:,1)) datenum(claim_id_time(:,2))];
+%         %get all the datahave not
+else
+    [claim_mat claim_level_claim_ids] = svm_fetch_claim_level_matrix_scaled(conn,'train',[],[],label_type);
+    claim_mat = [claim_level_claim_ids claim_mat];
+end
+
+if strcmpi(train_by_type,'temporal')
+    %get the claims and time
+    setdbprefs('DataReturnFormat','cellarray');
+    query = ['SELECT DISTINCT claim_labels.claim_id,clm_paid_date FROM claim_labels '...
+             'JOIN ETL_claim_headers ON (ETL_claim_headers.claim_id=claim_labels.claim_id) '...
+             'WHERE clm_paid_date IS NOT NULL ORDER BY clm_paid_date'];
+    claim_id_time = sql_query(conn,query);
+    claim_id_time_mat = [cell2mat(claim_id_time(:,1)) datenum(claim_id_time(:,2))];
+    setdbprefs('DataReturnFormat','numeric');
+end
+
+fix_model_ids = model_ids(svm_get_model_param(conn,model_ids,'fix_train_and_test_data',true)==1);
+non_fix_model_ids = setdiff(model_ids,fix_model_ids);
+l_fix_mat = 0;
+
+if ~isempty(fix_model_ids)
+   
+    switch  train_by_type
+        case 'random'
+            exp_cond_mat(:,1) = svm_get_model_param(conn,fix_model_ids,'number_of_trials',true);
+            exp_cond_mat(:,2) = svm_get_model_param(conn,fix_model_ids,'train_test_partition',true);
+            exp_cond_mat(:,3) = svm_get_model_param(conn,fix_model_ids,'sample_percent',true);
+            exp_cond_mat(:,4) = svm_get_model_param(conn,fix_model_ids,'test_set_rework_ratio',true);
+            exp_cond_mat(:,5) = svm_get_model_param(conn,fix_model_ids,'train_set_rework_ratio',true);
+        case 'temporal'           
+            exp_cond_mat(:,1)  = svm_get_model_param(conn,fix_model_ids,'test_rework_ratio',true);            
+            exp_cond_mat(:,2)  = svm_get_model_param(conn,fix_model_ids,'train_rework_ratio',true);            
+            exp_cond_mat(:,3)  = svm_get_model_param(conn,fix_model_ids,'training_time',true);
+            exp_cond_mat(:,4)  = svm_get_model_param(conn,fix_model_ids,'testing_time',true);
+            exp_cond_mat(:,5)  = datenum(svm_get_model_param(conn,fix_model_ids,'start_date',false));
+            exp_cond_mat(:,6)  = datenum(svm_get_model_param(conn,fix_model_ids,'end_date',false));
+            exp_cond_mat(:,7)  = svm_get_model_param(conn,fix_model_ids,'min_train_data_count',true);
+            exp_cond_mat(:,8)  = svm_get_model_param(conn,fix_model_ids,'min_test_data_count',true);
+            exp_cond_mat(:,9)  = svm_get_model_param(conn,fix_model_ids,'time_increment',true);
+            exp_cond_mat(:,10) = svm_get_model_param(conn,fix_model_ids,'max_split',true);                            
+            exp_cond_mat(:,11) = svm_get_model_param(conn,fix_model_ids,'start_ordering',true);
+            exp_cond_mat(:,12) = svm_get_model_param(conn,fix_model_ids,'time_window_between_training_and_test',true);
+    end
+    
+    [exp_cond_mat I] = sortrows(exp_cond_mat);
+    [data_param_mat J] = unique(exp_cond_mat,'rows','first');
+    [data_param_mat K] = unique(exp_cond_mat,'rows','last');
+    Z = K-J;
+    
+    l_fix_mat = length(J);
+    
+    model_id_mat = zeros((length(Z)+(n_models-length(fix_model_ids))),max(Z));
+    for i=1:l_fix_mat
+        model_id_mat(i,1:Z(i)+1) = model_ids(I(J(i):K(i)));
+    end
+end
+
+if ~isempty(non_fix_model_ids)    
+    l_non_fix_mat = length(non_fix_model_ids);
+   
+    switch  train_by_type
+        case 'random'
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,1) = svm_get_model_param(conn,non_fix_model_ids,'number_of_trials',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,2) = svm_get_model_param(conn,non_fix_model_ids,'train_test_partition',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,3) = svm_get_model_param(conn,non_fix_model_ids,'sample_percent',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,4) = svm_get_model_param(conn,non_fix_model_ids,'test_set_rework_ratio',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,5) = svm_get_model_param(conn,non_fix_model_ids,'train_set_rework_ratio',true);
+        case 'temporal'
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,1)  = svm_get_model_param(conn,non_fix_model_ids,'test_rework_ratio',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,2)  = svm_get_model_param(conn,non_fix_model_ids,'train_rework_ratio',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,3)  = svm_get_model_param(conn,non_fix_model_ids,'training_time',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,4)  = svm_get_model_param(conn,non_fix_model_ids,'testing_time',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,5)  = datenum(svm_get_model_param(conn,non_fix_model_ids,'start_date',false));
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,6)  = datenum(svm_get_model_param(conn,non_fix_model_ids,'end_date',false));
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,7)  = svm_get_model_param(conn,non_fix_model_ids,'min_train_data_count',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,8)  = svm_get_model_param(conn,non_fix_model_ids,'min_test_data_count',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,9)  = svm_get_model_param(conn,non_fix_model_ids,'time_increment',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,10) = svm_get_model_param(conn,non_fix_model_ids,'max_split',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,11) = svm_get_model_param(conn,non_fix_model_ids,'start_ordering',true);
+            data_param_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,12) = svm_get_model_param(conn,non_fix_model_ids,'time_window_between_training_and_test',true);            
+    end
+     
+    model_id_mat(l_fix_mat+1:l_fix_mat+l_non_fix_mat,1) = non_fix_model_ids;
+end
+clear i j model_ids
+
+[m n] = size(model_id_mat);
+model_param_mat = cell(m,n,10);
+
+for i=1:m
+    for j=1:n
+        if model_id_mat(i,j)~=0
+            model_param_mat{i,j,6} = svm_get_model_param(conn,model_id_mat(i,j),'feature_min_frequency_threshold',true);
+            model_param_mat{i,j,7} = svm_get_active_features(conn,0,model_id_mat(i,j));
+            query = ['SELECT DISTINCT model_classes.name FROM model_classes'...
+                    ' JOIN experiments ON model_classes.id=experiments.model_class_id'...
+                    ' JOIN training_models ON training_models.experiment_id=experiments.id'...
+                    ' WHERE training_models.training_model_id=' int2str(model_id_mat(i,j))];
+            setdbprefs('DataReturnFormat','cellarray');
+            model_param_mat{i,j,8} = sql_query(conn,query);
+            
+            if ~isempty(strfind(model_param_mat{i,j,8},'SOFIA'))
+                model_param_mat{i,j,1} = svm_get_model_param(conn,model_id_mat(i,j),'c_value',true);
+                model_param_mat{i,j,2} = svm_get_model_param(conn,model_id_mat(i,j),'n_value',true);
+                model_param_mat{i,j,3} = svm_get_model_param(conn,model_id_mat(i,j),'learner_type',false);
+                model_param_mat{i,j,4} = svm_get_model_param(conn,model_id_mat(i,j),'loop_type',false);
+                w0_ID = svm_get_model_param(conn,model_id_mat(i,j),'input_model',true);
+                model_param_mat{i,j,8} = 'SOFIA';
+            elseif ~isempty(strfind(model_param_mat{i,j,8},'SGSVM'))
+                model_param_mat{i,j,1} = svm_get_model_param(conn,model_id_mat(i,j),'c_value',true);
+                model_param_mat{i,j,2} = svm_get_model_param(conn,model_id_mat(i,j),'n_value',true);
+                model_param_mat{i,j,3} = svm_get_model_param(conn,model_id_mat(i,j),'k_value',true);
+                model_param_mat{i,j,4} = svm_get_model_param(conn,model_id_mat(i,j),'stop_time',true);
+                w0_ID = svm_get_model_param(conn,model_id_mat(i,j),'w0_id',true);
+                model_param_mat{i,j,8} = 'SGSVM';
+            elseif ~isempty(strfind(model_param_mat{i,j,8},'SVM PERF'))
+                model_param_mat{i,j,1} = svm_get_model_param(conn,model_id_mat(i,j),'c_value',true);
+                model_param_mat{i,j,2} = svm_get_model_param(conn,model_id_mat(i,j),'e_value',true);
+                model_param_mat{i,j,3} = svm_get_model_param(conn,model_id_mat(i,j),'l_value',true);
+                model_param_mat{i,j,4} = svm_get_model_param(conn,model_id_mat(i,j),'w_value',true);
+                model_param_mat{i,j,5} = svm_get_model_param(conn,model_id_mat(i,j),'t_value',true);
+                if model_param_mat{i,j,5} ~= 0
+                    model_param_mat{i,j,9} = svm_get_model_param(conn,model_id_mat(i,j),'d_g_s_value',true);
+                    if model_param_mat{i,j,5} == 3
+                        model_param_mat{i,j,10} = svm_get_model_param(conn,model_id_mat(i,j),'r_value',true);
+                    end
+                end
+                w0_ID = 0;
+                model_param_mat{i,j,8} = 'SVM PERF';
+            elseif ~isempty(strfind(model_param_mat{i,j,8},'LIBLINEAR'))
+                model_param_mat{i,j,1} = svm_get_model_param(conn,model_id_mat(i,j),'c_value',true);
+                model_param_mat{i,j,2} = svm_get_model_param(conn,model_id_mat(i,j),'s_value',true);
+                model_param_mat{i,j,3} = svm_get_model_param(conn,model_id_mat(i,j),'e_value',true);
+                model_param_mat{i,j,4} = svm_get_model_param(conn,model_id_mat(i,j),'b_value',true);
+            end       
+           
+            if w0_ID~=0
+                model_param_mat{i,j,5} = sql_query(conn,['SELECT DISTINCT feature_id, weight FROM feature_training_model_weights'...
+                                                        ' WHERE model_statistic_id = ' int2str(w0_ID)]);
+            else
+                model_param_mat{i,j,5} = {[0] [0]};
+            end
+            
+        end
+    end
+end
+clear i j
+
+training_precisions = sql_query(conn,'select id, precision from  model_training_precisions');
+if iscell(training_precisions)
+    training_precisions=cell2mat(training_precisions);
+end
+
+for i = 1:m;
+    I = find(model_id_mat(i,:));
+    model_ids = model_id_mat(i,I)';
+    model_param_mat_i = cell(length(I),10);
+    model_param_mat_i(:,:) = model_param_mat(i,I,:);
+    
+    try
+        switch lower(train_by_type)
+            case 'random'
+                svm_train_by_random(conn,model_ids,training_precisions,...
+                                    data_param_mat(i,:)',model_param_mat_i,...
+                                    claim_mat,test_sp_case_mat,train_sp_case_mat,...
+                                    workingdir);
+            case 'temporal'
+                svm_train_by_temporal(conn,model_ids,training_precisions,...
+                                      data_param_mat(i,:)',model_param_mat_i,...
+                                      claim_mat,claim_id_time_mat,...
+                                      test_sp_case_mat,train_sp_case_mat,...
+                                      workingdir);
+        end
+        status = {'Finished'};
+    catch MException
+        status = MException.message
+    end
+    
+    n_complete = length(find(model_id_mat(i,:)));
+    N_complete = N_complete+n_complete;
+    
+%    waitbar(N_complete/n_models,h,['Experiment Running.. ' N_complete/n_models*100 '% complete']);
+    for j=1:n_complete
+        update(conn,'training_models',{'status_cd'},status,...
+              ['where training_models.training_model_id = ', int2str(model_id_mat(i,j))]);          
+    end
+end
+
+if best_model_flag==1
+    %best_mode_id = svm_perf_determine_best_model(conn,experiment_id,batch_no);
+    %svm_perf_train_best_model_temporal(conn,best_mode_id,claim_id_time_mat,cla
+    %im_mat,claim_level_claim_ids,line_mat,line_level_claim_ids)
+end
+               
+close(h)
+
+disp 'Experiment Complete'
